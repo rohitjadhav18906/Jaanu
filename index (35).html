@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Instagram DM + Video Call</title>
+<script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+<style>
+  body { margin:0; font-family: Arial, sans-serif; background:#fafafa; }
+  .header { background:#fff; padding:15px; border-bottom:1px solid #dbdbdb; display:flex; justify-content:space-between; align-items:center; }
+  .header h2 { margin:0; font-size:18px; }
+  .messages { height:40vh; overflow-y:scroll; padding:10px; display:flex; flex-direction:column; gap:10px; }
+  .message { max-width:70%; padding:10px; border-radius:15px; word-break: break-word; }
+  .sent { align-self:flex-end; background:#dcf8c6; }
+  .received { align-self:flex-start; background:#fff; border:1px solid #dbdbdb; }
+  .input-box { display:flex; border-top:1px solid #dbdbdb; background:#fff; padding:5px; gap:5px; }
+  .input-box input[type="text"] { flex:1; padding:10px; border:none; outline:none; font-size:16px; border-radius:10px; }
+  .input-box input[type="file"] { border:none; }
+  .input-box button { padding:10px 15px; border:none; background:#0095f6; color:#fff; cursor:pointer; font-weight:bold; border-radius:10px; }
+  .video-container { display:flex; justify-content:space-around; margin:10px 0; flex-wrap:wrap; gap:10px; }
+  video { width:45%; max-height:300px; border:1px solid #dbdbdb; border-radius:10px; background:#000; }
+  .room-info { padding:10px; background:#fff; border-bottom:1px solid #dbdbdb; }
+  .link-box { display:flex; gap:10px; margin-top:5px; }
+  .link-box input { flex:1; padding:5px; font-size:14px; border-radius:5px; }
+  .link-box button { padding:5px 10px; font-size:14px; background:#0095f6; color:#fff; border:none; cursor:pointer; border-radius:5px; }
+  .controls { display:flex; gap:10px; margin:10px; justify-content:center; }
+  .controls button { padding:8px 12px; border:none; border-radius:10px; background:#0095f6; color:#fff; cursor:pointer; font-weight:bold; }
+  img, video.received-file { max-width:200px; border-radius:10px; margin-top:5px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h2>Rohit Jadhav</h2>
+</div>
+
+<div class="room-info">
+  <div>Your Room Link (Share with friend):</div>
+  <div class="link-box">
+    <input type="text" id="roomLink" readonly>
+    <button onclick="copyLink()">Copy</button>
+  </div>
+</div>
+
+<div class="messages" id="messages">
+</div>
+
+<div class="input-box">
+  <input type="text" id="messageInput" placeholder="Message...">
+  <input type="file" id="fileInput" accept="image/*,video/*">
+  <button onclick="sendMessage()">Send</button>
+</div>
+
+<div class="video-container">
+  <video id="localVideo" autoplay muted></video>
+  <video id="remoteVideo" autoplay></video>
+</div>
+
+<div class="controls">
+  <button id="muteBtn">Mute</button>
+  <button id="speakerBtn">Speaker Off</button>
+  <button id="endCallBtn">End Call</button>
+</div>
+
+<script>
+let messagesDiv = document.getElementById('messages');
+let peer;
+let localStream;
+let currentCall;
+let conn; // Data connection
+
+function appendMessage(cls, text='', fileData='', fileType='') {
+  const msgDiv = document.createElement('div');
+  msgDiv.classList.add('message', cls);
+  if(fileData){
+    if(fileType.startsWith('image')){
+      const img = document.createElement('img');
+      img.src = fileData;
+      msgDiv.appendChild(img);
+    } else if(fileType.startsWith('video')){
+      const vid = document.createElement('video');
+      vid.src = fileData;
+      vid.controls = true;
+      vid.classList.add('received-file');
+      msgDiv.appendChild(vid);
+    }
+  }
+  if(text) msgDiv.appendChild(document.createTextNode(text));
+  messagesDiv.appendChild(msgDiv);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function sendMessage() {
+  const input = document.getElementById('messageInput');
+  const text = input.value.trim();
+  const fileInput = document.getElementById('fileInput');
+
+  if(text){
+    appendMessage('sent', text);
+    if(conn && conn.open) conn.send({type:'text', content:text});
+    input.value='';
+  }
+
+  if(fileInput.files.length>0){
+    const file = fileInput.files[0];
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      appendMessage('sent','',reader.result,file.type);
+      if(conn && conn.open) conn.send({type:'file', content:reader.result, fileType:file.type});
+    };
+    reader.readAsDataURL(file);
+    fileInput.value='';
+  }
+}
+
+function copyLink(){
+  const input = document.getElementById('roomLink');
+  input.select();
+  input.setSelectionRange(0,99999);
+  document.execCommand('copy');
+  alert('Room link copied!');
+}
+
+async function initCall(){
+  const userId = 'peer-'+Math.random().toString(36).substring(2,8);
+  const link = window.location.origin + window.location.pathname + '?peer=' + userId;
+  document.getElementById('roomLink').value = link;
+
+  localStream = await navigator.mediaDevices.getUserMedia({video:true, audio:true});
+  document.getElementById('localVideo').srcObject = localStream;
+
+  peer = new Peer(userId,{
+    host:'0.peerjs.com',
+    port:443,
+    secure:true
+  });
+
+  peer.on('open', id=>{
+    console.log('My Peer ID:',id);
+    const urlParams = new URLSearchParams(window.location.search);
+    const otherId = urlParams.get('peer');
+    if(otherId && otherId!==id){
+      currentCall = peer.call(otherId, localStream);
+      currentCall.on('stream', remoteStream=>{
+        document.getElementById('remoteVideo').srcObject = remoteStream;
+      });
+      conn = peer.connect(otherId);
+      setupDataConnection();
+    }
+  });
+
+  peer.on('call', call=>{
+    currentCall = call;
+    call.answer(localStream);
+    call.on('stream', remoteStream=>{
+      document.getElementById('remoteVideo').srcObject = remoteStream;
+    });
+  });
+
+  peer.on('connection', c=>{
+    conn = c;
+    setupDataConnection();
+  });
+
+  peer.on('error', err=>{console.error(err); alert('PeerJS Error:'+err);});
+}
+
+function setupDataConnection(){
+  if(!conn) return;
+  conn.on('data', data=>{
+    if(data.type==='text'){
+      appendMessage('received', data.content);
+    } else if(data.type==='file'){
+      appendMessage('received','',data.content,data.fileType);
+    }
+  });
+}
+
+// --- Call control buttons ---
+let muted=false, speakerOn=true;
+document.getElementById('muteBtn').onclick = ()=>{
+  if(!localStream) return;
+  muted = !muted;
+  localStream.getAudioTracks()[0].enabled = !muted;
+  document.getElementById('muteBtn').innerText = muted?'Unmute':'Mute';
+};
+document.getElementById('speakerBtn').onclick = ()=>{
+  const remoteVideo = document.getElementById('remoteVideo');
+  speakerOn = !speakerOn;
+  remoteVideo.muted = !speakerOn;
+  document.getElementById('speakerBtn').innerText = speakerOn?'Speaker Off':'Speaker On';
+};
+document.getElementById('endCallBtn').onclick = ()=>{
+  if(currentCall) currentCall.close();
+  if(peer) peer.destroy();
+  alert('Call ended');
+};
+
+initCall();
+</script>
+</body>
+</html>
